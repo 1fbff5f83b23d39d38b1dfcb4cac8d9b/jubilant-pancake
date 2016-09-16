@@ -3,20 +3,27 @@ import json
 import urllib
 import argparse
 import subprocess
+import os
 
 def get_args():
-        parser = argparse.ArgumentParser(description="A tool to download files from the 0x00sec repo.")
+        parser = argparse.ArgumentParser(description="""
+A tool to download files from the 0x00sec repo.
+Possible actions:
+\tinstall <package1> <package2>... - Installs packages.
+\tupdate - Updates local Jason database.
+\tshow <package> - Shows information about a package.
+""", formatter_class=argparse.RawTextHelpFormatter)
         parser.add_argument("action",metavar="<action>",nargs="*")
         return parser.parse_args()
 
 def download_package(package):
+        if package not in get_package_list():
+                return package+" not found in packages.list, perhaps try 'null-get update'?"
         try:
-                with open("packages.list","r") as r:
-                        packages = [pack.strip() for pack in r.readlines()]
-                        if package not in packages: return "Package not found, perhaps try null-get update?"
+                if package in get_installed_package_list(): return package+" is already installed."
         except:
-                exit("packages.list not found, use null-get update to fix.")
-        print "Cloning package "+package
+                pass
+        print "Downloading package "+package
         url = parse_package_json(package)["repo-url"].replace("https://","git://")
 
         clone_proc = subprocess.Popen(["git","clone",url+".git","./packages/"+package], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -28,7 +35,19 @@ def download_package(package):
                 elif "not found" in err:
                         return package+" does not exist. Use 'null-get update' to fix, and contact repo admins if the problem persists."
 
+        update_installed_package_list(package, parse_package_json(package)["version"])
         return package+" downloaded successfully."
+
+def search_package(package):
+        if package not in get_package_list():
+                print package+" not found in packages.list, perhaps try 'null-get update'?"
+                return
+        info = parse_package_json(package)
+        print package+" - "+info["description"]
+        print "Version:\t"+str(info["version"])
+        print "Contributors:"
+        for contributor in info["contributors"]:
+                print "- "+contributor
 
 def update_packages():
         print "Retrieving package list..."
@@ -40,9 +59,43 @@ def update_packages():
                                 line = line.split()[3].replace("href=","").replace('"','').split("/")[-1].replace(".json","")+"\n"
                                 f.write(line)
 
-def parse_package_json(package):
+        with open("packages.list","r") as f:
+                for line in f.readlines():
+                        create_package_json(line.strip())
+
+def create_package_json(package):
+        print "Creating/updating "+package
         package_info = json.loads(urllib.urlopen("https://raw.githubusercontent.com/0x00sec/Agora/master/Packages/"+package+".json").read())
-        return package_info[package][0]
+        try:
+                package_info[package]
+                real_name = package
+        except:
+                real_name = package_info.itervalues().next()
+                "WARNING: Repository json file name is "+package+", but package name is "+real_name+". Notify the repo administrators."
+        if not os.path.exists("./json-list/"): os.makedirs("./json-list/")
+        with open("./json-list/"+real_name+".json","w") as f:
+                f.write(json.dumps(package_info))
+
+def parse_package_json(package):
+        if not os.path.exists("./json-list/"+package+".json"): return False
+        with open("./json-list/"+package+".json") as f:
+                package_info = json.loads(f.read())
+                return package_info[package][0]
+
+def get_package_list():
+        try:
+                with open("packages.list","r") as r:
+                        return [pack.strip() for pack in r.readlines()]
+        except:
+                exit("packages.list not found, use null-get update to fix.")
+
+def update_installed_package_list(package, version):
+        with open("installed_packages.list","a") as f:
+                f.write(package+" "+str(version)+"\n")
+
+def get_installed_package_list():
+        with open("installed_packages.list","r") as f:
+                return [pack.strip() for pack in f.readlines()]
 
 def decide_on_action():
         action = get_args().action
@@ -50,6 +103,8 @@ def decide_on_action():
         if action[0] == "install":
                 for package in action[1:]:
                         print download_package(package)
+        if action[0] == "show":
+                search_package(action[1])
         elif action[0] == "update":
                 update_packages()
 
