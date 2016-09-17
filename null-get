@@ -5,25 +5,33 @@ import argparse
 import subprocess
 import os
 
+V = '\033[95m'
+B = '\033[94m'
+G = '\033[92m'
+Y = '\033[93m'
+R = '\033[91m'
+W = '\033[0m'
+BOLD = '\033[1m'
+UNDERLINE = '\033[4m'
+
 def get_args():
         parser = argparse.ArgumentParser(description="""
 A tool to download files from the 0x00sec repo.
 Possible actions:
-\tinstall <package1> <package2>... - Installs packages.
+\tinstall <package1> <package2> ... - Installs packages.
+\tremove <package1> <package2> ... - Removes packages.
 \tupdate - Updates local Jason database.
+\tupgrade - Upgrades installed packages.
+\tsearch <search-term> - Searches package list for <search-term>.
 \tshow <package> - Shows information about a package.
+\tlist <local|all> - Shows a list of installed/all packages.
 """, formatter_class=argparse.RawTextHelpFormatter)
         parser.add_argument("action",metavar="<action>",nargs="*")
-        return parser.parse_args()
+        return parser
 
 def download_package(package):
-        if package not in get_package_list():
-                return package+" not found in packages.list, perhaps try 'null-get update'?"
-        try:
-                if package in get_installed_package_list(): return package+" is already installed."
-        except:
-                pass
-        print "Downloading package "+package
+
+        print G+"[*] Downloading package "+package+W
         url = parse_package_json(package)["repo-url"].replace("https://","git://")
 
         clone_proc = subprocess.Popen(["git","clone",url+".git","./packages/"+package], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -31,81 +39,175 @@ def download_package(package):
 
         if clone_proc.returncode != 0:
                 if "already exists" in err:
-                        return package+" is already downloaded. Use 'null-get upgrade' to update."
+                        print R+"[-] "+package+" is already downloaded. Use 'null-get upgrade' to update."
+                        return
                 elif "not found" in err:
-                        return package+" does not exist. Use 'null-get update' to fix, and contact repo admins if the problem persists."
+                        print R+"[-] "+package+" does not exist. Use 'null-get update' to fix, and contact repo admins if the problem persists."
+                        return
 
-        update_installed_package_list(package, parse_package_json(package)["version"])
-        return package+" downloaded successfully."
+        update_installed_package_list(package)
+        print G+"[+] "+package+" downloaded successfully."
 
-def search_package(package):
+def remove_package(package):
+        if package not in get_installed_package_list():
+                print R+"[*] "+package+" is not installed."+W
+                return 0
+
+        total_size = 0
+        for dirpath, dirnames, filenames in os.walk("./packages/"+package):
+                for f in filenames:
+                        fp = os.path.join(dirpath, f)
+                        total_size += os.path.getsize(fp)
+
+        print G+"[*] Removing "+package+"..."+W
+        subprocess.call(["rm","-r","./packages/"+package])
+        print G+"[*] Updating package list..."+W
+        with open("installed_packages.list","r") as f:
+                contents = f.readlines()
+        with open("installed_packages.list","w") as f:
+                for line in contents:
+                        if package != line.strip():
+                                f.write(line)
+        print G+"[+] "+package+" removed successfully."+W
+        return total_size/1024
+
+def show_package(package):
         if package not in get_package_list():
-                print package+" not found in packages.list, perhaps try 'null-get update'?"
+                print R+"[-] "+package+" not found in packages.list, perhaps try 'null-get update'?"
                 return
         info = parse_package_json(package)
-        print package+" - "+info["description"]
+        print BOLD+package+W+" - "+info["description"]
         print "Version:\t"+str(info["version"])
         print "Contributors:"
         for contributor in info["contributors"]:
                 print "- "+contributor
 
+def search_package(package):
+        for line in get_package_list():
+                if package in line:
+                        print line.strip()
+
+def update_jasons():
+        print G+"[*] Retrieving Jason list..."
+        clone_proc = subprocess.Popen(["git","clone","git://github.com/0x00sec/NullHub.git","./jasons-db/"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        out, err = clone_proc.communicate()
+        print G+"[+] Jason list downloaded successfully."
+
 def update_packages():
-        print "Retrieving package list..."
-        repo = urllib.urlopen("https://github.com/0x00sec/Agora/tree/master/Packages/").readlines()
-        packages = []
+        update_jasons()
+        print G+"[*] Updating package list..."
         with open("packages.list","w") as f:
-                for line in repo:
-                        if ".json" in line and "blob" in line:
-                                line = line.split()[3].replace("href=","").replace('"','').split("/")[-1].replace(".json","")+"\n"
-                                f.write(line)
-
-        with open("packages.list","r") as f:
-                for line in f.readlines():
-                        create_package_json(line.strip())
-
-def create_package_json(package):
-        print "Creating/updating "+package
-        package_info = json.loads(urllib.urlopen("https://raw.githubusercontent.com/0x00sec/Agora/master/Packages/"+package+".json").read())
-        try:
-                package_info[package]
-                real_name = package
-        except:
-                real_name = package_info.itervalues().next()
-                "WARNING: Repository json file name is "+package+", but package name is "+real_name+". Notify the repo administrators."
-        if not os.path.exists("./json-list/"): os.makedirs("./json-list/")
-        with open("./json-list/"+real_name+".json","w") as f:
-                f.write(json.dumps(package_info))
+                for filename in os.listdir("./jasons-db/"):
+                        if ".json" in filename:
+                                f.write(filename.replace(".json","")+"\n")
+        print G+"[+] Package list updated successfully."
 
 def parse_package_json(package):
-        if not os.path.exists("./json-list/"+package+".json"): return False
-        with open("./json-list/"+package+".json") as f:
+        if not os.path.exists("./jasons-db/"+package+".json"): return False
+        with open("./jasons-db/"+package+".json") as f:
                 package_info = json.loads(f.read())
-                return package_info[package][0]
+                realname = package_info.keys()[0]
+                return package_info[realname][0]
+
+def upgrade_packages():
+        inst_packages = get_installed_package_list()
+        if not inst_packages:
+                print R+"[-]You have not installed any packages yet!"
+                return
+        for package in inst_packages:
+                url = parse_package_json(package)["repo-url"].replace("https://","git://")
+                os.chdir("packages/"+package)
+                clone_proc = subprocess.Popen(["git","pull",url+".git"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                os.chdir("../..")
+                out, err = clone_proc.communicate()
+
+                if clone_proc.returncode != 0:
+                        print err
+                        return
+                if "up-to-date" in out:
+                        print G+"[*] "+package+" is already at the newest version."
+                else:
+                        print G+"[+] "+package+" upgraded successfully."
+
+def get_package_stats(package):
+        _, _, _, user, packname = parse_package_json(package)["repo-url"].split("/")
+        stats = json.loads(urllib.urlopen("https://api.github.com/repos/"+user+"/"+packname).read())
+        return stats
 
 def get_package_list():
         try:
                 with open("packages.list","r") as r:
                         return [pack.strip() for pack in r.readlines()]
         except:
-                exit("packages.list not found, use null-get update to fix.")
+                exit(R+"packages.list not found, use null-get update to fix.")
 
-def update_installed_package_list(package, version):
-        with open("installed_packages.list","a") as f:
-                f.write(package+" "+str(version)+"\n")
+def update_installed_package_list(package):
+        with open("installed_packages.list","a+") as f:
+                if package not in f.read():
+                        f.write(package+"\n")
 
 def get_installed_package_list():
-        with open("installed_packages.list","r") as f:
-                return [pack.strip() for pack in f.readlines()]
+        try:
+                with open("installed_packages.list","r") as f:
+                        return [pack.strip() for pack in f.readlines()]
+        except IOError:
+                return False
 
 def decide_on_action():
-        action = get_args().action
-        if not action: exit("No action supplied")
+        action = get_args().parse_args().action
+        if not action:
+                get_args().print_help()
+                exit()
         if action[0] == "install":
+                size = 0
                 for package in action[1:]:
-                        print download_package(package)
+                        if package not in get_package_list():
+                                print R+"[-] "+package+" not found in packages.list, perhaps try 'null-get update'?"
+                                action.remove(package)
+                                continue
+                        try:
+                                if package in get_installed_package_list():
+                                        print Y+"[*] "+package+" is already installed."
+                                        action.remove(package)
+                                        continue
+                        except Exception as e:
+                                print e
+                        size += get_package_stats(package)["size"]
+                print G+"[*] Installation will use "+str(size)+"KB of disk space. (Actually more but that's what github reports *shrug)"+W
+                for package in action[1:]:
+                        download_package(package)
+
         if action[0] == "show":
-                search_package(action[1])
+                show_package(action[1])
+
         elif action[0] == "update":
                 update_packages()
 
+        elif action[0] == "upgrade":
+                upgrade_packages()
+
+        elif action[0] == "remove":
+                size = 0
+                for package in action[1:]:
+                        size += remove_package(package)
+                print G+"[*] "+str(size)+"KB of disk space have been freed."
+
+        elif action[0] == "search":
+                search_package(action[1])
+
+        elif action[0] == "list":
+                try:
+                        if action[1] == "local":
+                                print UNDERLINE+"Installed packages:"+W
+                                for p in get_installed_package_list():
+                                        print p
+                        elif action[1] == "all":
+                                print UNDERLINE+"Packages in repo:"+W
+                                for p in get_package_list():
+                                        print p
+                except IndexError:
+                        print UNDERLINE+"Installed packages:"+W
+                        for p in get_installed_package_list():
+                                print p
 decide_on_action()
+
